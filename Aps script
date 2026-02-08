@@ -1,0 +1,232 @@
+import streamlit as st
+import cv2
+import supervision as sv
+import numpy as np
+import os
+import torch
+import PIL
+import base64
+from ultralytics import YOLO
+
+# --- KONFIGURASI APLIKASI ---
+st.set_page_config(
+    page_title="ITERA-VISION-GPR-UI",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- FUNGSI UNTUK TAMPILAN ---
+@st.cache_data # Cache data untuk performa
+def get_base64_of_bin_file(bin_file):
+    with open(bin_file, 'rb') as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
+
+def set_background(image_file):
+    """
+    Fungsi ini mengatur gambar latar belakang dari file lokal,
+    menambahkan overlay gelap, dan memberikan efek blur.
+    """
+    file_extension = image_file.split('.')[-1]
+    if file_extension.lower() == 'jpg':
+        file_extension = 'jpeg'
+
+    bin_str = get_base64_of_bin_file(image_file)
+    page_bg_img = f'''
+    <style>
+    /* Gunakan pseudo-element ::before untuk menampung background */
+    .stApp::before {{
+        content: "";
+        position: fixed;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        z-index: -1; /* Letakkan di belakang semua konten */
+
+        /* Terapkan gambar, overlay, dan blur di sini */
+        background-image: 
+            linear-gradient(rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)),
+            url("data:image/{file_extension};base64,{bin_str}");
+        background-size: cover;
+        background-attachment: fixed;
+        
+        /* INI KUNCINYA: Menambahkan efek blur */
+        filter: blur(5px); /* Anda bisa mengatur nilai blur, misal: 3px, 10px */
+    }}
+
+    /* Pastikan container utama transparan agar background terlihat */
+    .stApp {{
+        background-color: transparent;
+    }}
+    .stApp > header {{
+        background-color: transparent;
+    }}
+    </style>
+    '''
+    st.markdown(page_bg_img, unsafe_allow_html=True)
+
+# --- MEMUAT MODEL (Tetap sama) ---
+@st.cache_resource
+def load_model(model_path):
+    try:
+        model = YOLO(model_path)
+        return model
+    except Exception as e:
+        st.error(f"Gagal memuat model. Error: {e}")
+        return None
+
+# --- APLIKASI UTAMA ---
+
+# BARU: Panggil fungsi untuk set background
+# Pastikan Anda punya file 'background.jpeg' atau ganti namanya
+# GUNAKAN KODE BARU INI
+def find_background_image():
+    """Mencari file background yang valid di folder."""
+    valid_extensions = ["jpg", "jpeg", "png"]
+    for ext in valid_extensions:
+        filename = f"background.{ext}"
+        if os.path.exists(filename):
+            return filename
+    return None
+
+background_file = find_background_image()
+
+if background_file:
+    set_background(background_file)
+else:
+    st.warning("File background dengan nama 'background.jpg', 'background.jpeg', atau 'background.png' tidak ditemukan di folder aplikasi.")
+
+
+st.title("ITERA-VISION-GPR-UI")
+st.subheader("ITERA Vision System for GPR Utilities Inference")
+st.caption('Aplikasi computer vision berbasis YOLOv12 yang dikembangkan untuk mendeteksi utilitas bawah permukaan menggunakan citra radargram GPR.')
+
+# --- SIDEBAR & KONFIGURASI ---
+with st.sidebar:
+    st.header("⚙️ Konfigurasi")
+    
+    # Pemilihan Model
+    try:
+        model_files = [f for f in os.listdir('.') if f.endswith('.pt')]
+        default_model = 'bestPT_exp1.pt' if 'bestPT_exp1.pt' in model_files else (model_files[0] if model_files else None)
+        if default_model:
+            selected_model_path = st.selectbox("Pilih Model", model_files, index=model_files.index(default_model))
+        else:
+            st.error("Tidak ada file model (.pt) yang ditemukan.")
+            selected_model_path = None
+    except Exception as e:
+        st.error(f"Gagal memuat daftar model: {e}")
+        selected_model_path = None
+
+    st.header("Unggah Gambar")
+    source_imgs = st.file_uploader("Pilih satu atau lebih file gambar...", type=["jpg", "jpeg", "png", "bmp", "webp"], accept_multiple_files=True)
+    
+    confidence = st.slider("Pilih Tingkat Keyakinan (Confidence)", 25, 100, 40) / 100.0
+    
+    st.markdown("<br>", unsafe_allow_html=True) # Sedikit spasi
+    detect_button = st.button('✨ Deteksi Objek ✨', use_container_width=True)
+
+
+# --- MEMUAT MODEL YANG DIPILIH ---
+model = None
+if selected_model_path:
+    model = load_model(selected_model_path)
+else:
+    st.sidebar.warning("Letakkan file model .pt di folder yang sama.")
+
+
+# --- HALAMAN UTAMA & PROSES ---
+
+# BARU: Tampilkan pesan sambutan jika belum ada aksi
+if not source_imgs and not detect_button:
+    st.info("👋 **Selamat Datang!** Silahkan unggah gambar dan atur konfigurasi di sidebar untuk memulai deteksi.")
+    #st.image("contoh_deteksi.jpg", caption="Contoh Hasil Deteksi") # Contoh gambar placeholder
+
+if detect_button and source_imgs and model:
+    # BARU: Tampilkan ringkasan di atas
+    st.success(f"Memproses {len(source_imgs)} gambar dengan model `{selected_model_path}`...")
+    st.markdown("---")
+    
+    for source_img in source_imgs:
+        # BARU: Gunakan container dengan border untuk setiap hasil agar lebih rapi
+        with st.container(border=True):
+            uploaded_image = PIL.Image.open(source_img).convert('RGB')
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader(f"Gambar Asli: `{source_img.name}`")
+                st.image(uploaded_image, use_container_width=True)
+            
+            with col2:
+                with st.spinner(f'Mendeteksi objek pada `{source_img.name}`...'):
+                    try:
+                        image_np = np.array(uploaded_image)
+                        
+                        results = model.predict(source=image_np, conf=confidence, verbose=False)[0]
+                        detections = sv.Detections.from_ultralytics(results)
+                        class_names = results.names
+
+                        st.subheader("Objek Terdeteksi")
+                        if len(detections) > 0:
+                            labels = [
+                                f"{class_names[class_id]} ({confidence:.2f})"
+                                for confidence, class_id in zip(detections.confidence, detections.class_id)
+                            ]
+                        
+                            # Konversi gambar ke format BGR untuk OpenCV
+                            image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+                            annotated_image = image_bgr.copy()
+
+                            # Definisikan warna sebagai tuple BGR
+                            warna_merah = (0, 0, 255)
+                            warna_putih = (255, 255, 255)
+
+                            # Loop melalui setiap deteksi untuk menggambar kotak dan labelnya
+                            for bbox, label_text in zip(detections.xyxy, labels):
+                                x1, y1, x2, y2 = bbox.astype(int)
+                                
+                                # Gambar Kotak Merah (tidak berubah)
+                                cv2.rectangle(annotated_image, (x1, y1), (x2, y2), warna_merah, thickness=2)
+                                
+                                # --- PENYEMPURNAAN TEKS DIMULAI DI SINI ---
+                                
+                                # 1. Atur parameter font yang lebih seimbang
+                                font_scale = 0.7
+                                font_thickness = 2  # <-- Kurangi ketebalan agar huruf tidak "bocor"
+                                
+                                # 2. Siapkan dan gambar background label
+                                (w, h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+                                cv2.rectangle(annotated_image, (x1, y1 - h - 10), (x1 + w, y1), warna_merah, thickness=cv2.FILLED)
+                                
+                                # 3. Tulis teks label dengan ANTI-ALIASING
+                                cv2.putText(
+                                    img=annotated_image, 
+                                    text=label_text, 
+                                    org=(x1, y1 - 5), 
+                                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, 
+                                    fontScale=font_scale, 
+                                    color=warna_putih, 
+                                    thickness=font_thickness,
+                                    lineType=cv2.LINE_AA  # <-- INI KUNCINYA UNTUK TEKS TAJAM
+                                )
+
+                            # Tampilkan hasil akhir
+                            st.image(cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB), use_container_width=True)
+
+                            with st.expander(f"**Lihat Detail Deteksi ({len(detections)} objek)**"):
+                                # BARU: Tampilkan detail dalam format yang lebih baik
+                                st.table([{"Objek": class_names[cid], "Confidence Score": f"{conf:.2%}"} for conf, cid in zip(detections.confidence, detections.class_id)])
+                        else:
+                            st.warning("Tidak ada objek yang terdeteksi dengan tingkat confidence saat ini.")
+                            st.image(uploaded_image, use_container_width=True) # Tampilkan gambar asli jika tidak ada deteksi
+                    
+                    except Exception as e:
+                        st.error(f"Terjadi error saat prediksi pada gambar {source_img.name}: {e}")
+
+elif detect_button:
+    if not model:
+        st.error("Model belum berhasil dimuat. Periksa konfigurasi di sidebar.")
+    if not source_imgs:
+        st.warning("Silakan unggah satu atau lebih gambar terlebih dahulu.")
